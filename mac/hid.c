@@ -53,6 +53,8 @@ typedef struct pthread_barrier {
 
 static int pthread_barrier_init(pthread_barrier_t *barrier, const pthread_barrierattr_t *attr, unsigned int count)
 {
+	(void) attr;
+
 	if(count == 0) {
 		errno = EINVAL;
 		return -1;
@@ -182,6 +184,12 @@ static void free_hid_device(hid_device *dev)
 	free(dev);
 }
 
+static struct hid_api_version api_version = {
+	.major = HID_API_VERSION_MAJOR,
+	.minor = HID_API_VERSION_MINOR,
+	.patch = HID_API_VERSION_PATCH
+};
+
 static	IOHIDManagerRef hid_mgr = 0x0;
 static	int is_macos_10_10_or_greater = 0;
 
@@ -268,8 +276,8 @@ static int get_string_property(IOHIDDeviceRef device, CFStringRef prop, wchar_t 
 			len * sizeof(wchar_t),
 			&used_buf_len);
 
-		if (chars_copied == len)
-			buf[len] = 0; /* len is decremented above */
+		if (chars_copied <= 0)
+			buf[0] = 0;
 		else
 			buf[chars_copied] = 0;
 
@@ -378,6 +386,16 @@ static int init_hid_manager(void)
 	return -1;
 }
 
+HID_API_EXPORT const struct hid_api_version* HID_API_CALL hid_version()
+{
+	return &api_version;
+}
+
+HID_API_EXPORT const char* HID_API_CALL hid_version_str()
+{
+	return HID_API_VERSION_STR;
+}
+
 /* Initialize the IOHIDManager if necessary. This is the public function, and
    it is safe to call this function repeatedly. Return 0 for success and -1
    for failure. */
@@ -483,11 +501,19 @@ static struct hid_device_info *create_device_info_with_usage(IOHIDDeviceRef dev,
 
 static struct hid_device_info *create_device_info(IOHIDDeviceRef device)
 {
-	struct hid_device_info *root = NULL;
+	const int32_t primary_usage_page = get_int_property(device, CFSTR(kIOHIDPrimaryUsagePageKey));
+	const int32_t primary_usage = get_int_property(device, CFSTR(kIOHIDPrimaryUsageKey));
+
+	/* Primary should always be first, to match previous behavior. */
+	struct hid_device_info *root = create_device_info_with_usage(device, primary_usage_page, primary_usage);
+	struct hid_device_info *cur = root;
+
+	if (!root)
+		return NULL;
+
 	CFArrayRef usage_pairs = get_usage_pairs(device);
 
 	if (usage_pairs != NULL) {
-		struct hid_device_info *cur = NULL;
 		struct hid_device_info *next = NULL;
 		for (CFIndex i = 0; i < CFArrayGetCount(usage_pairs); i++) {
 			CFTypeRef dict = CFArrayGetValueAtIndex(usage_pairs, i);
@@ -506,25 +532,15 @@ static struct hid_device_info *create_device_info(IOHIDDeviceRef device)
 					!CFNumberGetValue((CFNumberRef)usage_ref, kCFNumberSInt32Type, &usage)) {
 					continue;
 			}
+			if (usage_page == primary_usage_page && usage == primary_usage)
+				continue; /* Already added. */
+
 			next = create_device_info_with_usage(device, usage_page, usage);
-			if (cur == NULL) {
-				root = next;
-			}
-			else {
-				cur->next = next;
-			}
+			cur->next = next;
 			if (next != NULL) {
 				cur = next;
 			}
 		}
-	}
-
-	if (root == NULL) {
-		/* error when generating or parsing usage pairs */
-		int32_t usage_page = get_int_property(device, CFSTR(kIOHIDPrimaryUsagePageKey));
-		int32_t usage = get_int_property(device, CFSTR(kIOHIDPrimaryUsageKey));
-
-		root = create_device_info_with_usage(device, usage_page, usage);
 	}
 
 	return root;
@@ -567,6 +583,9 @@ struct hid_device_info  HID_API_EXPORT *hid_enumerate(unsigned short vendor_id, 
 	}
 
 	CFSetRef device_set = IOHIDManagerCopyDevices(hid_mgr);
+	if (device_set == NULL) {
+		return NULL;
+	}
 
 	/* Convert the list into a C array so we can iterate easily. */
 	num_devices = CFSetGetCount(device_set);
@@ -660,6 +679,9 @@ hid_device * HID_API_EXPORT hid_open(unsigned short vendor_id, unsigned short pr
 static void hid_device_removal_callback(void *context, IOReturn result,
                                         void *sender)
 {
+	(void) result;
+	(void) sender;
+
 	/* Stop the Run Loop for this device. */
 	hid_device *d = (hid_device*) context;
 
@@ -674,6 +696,11 @@ static void hid_report_callback(void *context, IOReturn result, void *sender,
                          IOHIDReportType report_type, uint32_t report_id,
                          uint8_t *report, CFIndex report_length)
 {
+	(void) result;
+	(void) sender;
+	(void) report_type;
+	(void) report_id;
+
 	struct input_report *rpt;
 	hid_device *dev = (hid_device*) context;
 
@@ -1164,6 +1191,11 @@ int HID_API_EXPORT_CALL hid_get_serial_number_string(hid_device *dev, wchar_t *s
 
 int HID_API_EXPORT_CALL hid_get_indexed_string(hid_device *dev, int string_index, wchar_t *string, size_t maxlen)
 {
+	(void) dev;
+	(void) string_index;
+	(void) string;
+	(void) maxlen;
+
 	/* TODO: */
 
 	return 0;
@@ -1172,6 +1204,7 @@ int HID_API_EXPORT_CALL hid_get_indexed_string(hid_device *dev, int string_index
 
 HID_API_EXPORT const wchar_t * HID_API_CALL  hid_error(hid_device *dev)
 {
+	(void) dev;
 	/* TODO: */
 
 	return L"hid_error is not implemented yet";
